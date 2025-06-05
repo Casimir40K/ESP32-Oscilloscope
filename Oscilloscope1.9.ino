@@ -6,7 +6,7 @@
   #include <WiFi.h>
   #include <WebServer.h>
   #include <Arduino.h>
-  #include "esp32-hal-timer.h"
+ // #include "esp32-hal-timer.h"
   #include "chartjs_umd.h"
 
 // ----------------------------
@@ -1198,7 +1198,8 @@
     // Setup signal generation timer
     signalTimer = timerBegin(10000); // 10kHz timer
     timerAttachInterrupt(signalTimer, &onSignalTimer);
-    timerAlarm(signalTimer, 1, true, 0); // Trigger every 100us (10kHz): 1 tick, auto-reload
+    timerAlarm(signalTimer, 1, true, 0); // Set to 1, but you may need 100 for 100us, or 10,000 for 1ms
+
   }
 
 // ----------------------------
