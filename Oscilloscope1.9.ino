@@ -91,8 +91,8 @@
   unsigned long lastWebUpdate = 0;
   unsigned long lastCapture = 0;
   unsigned long signalLastUpdate = 0;
-  unsigned long pulseStartTime = 0;
-  bool pulseActive = false;
+  volatile unsigned long pulseStartTime = 0;
+  volatile bool pulseActive = false;
   float signalPhase = 0.0;
   const long blinkInterval = 500;
 
@@ -853,61 +853,70 @@
 //   SIGNAL GENERATION LOGIC
 // ----------------------------
   void updateSignalOutput() {
-    int outputValue = 0;
+      int outputValue = 0;
 
-    // Safely copy config for use in ISR
-    portENTER_CRITICAL_ISR(&signalMux);
-    SignalConfig config = signalConfig;
-    portEXIT_CRITICAL_ISR(&signalMux);
+      // Safely copy config for use in ISR
+      portENTER_CRITICAL_ISR(&signalMux);
+      SignalConfig config = signalConfig;
+      portEXIT_CRITICAL_ISR(&signalMux);
 
-    if (config.isEnabled) {
-      float periodUs = (config.frequency > 0) ? (1000000.0 / config.frequency) : 1000000.0;
-      float timeInPeriod = fmod(micros(), periodUs);
-      float normalizedTime = timeInPeriod / periodUs;
-      if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
+      // Sanity checks
+      if (config.amplitude < 0) config.amplitude = 0;
+      if (config.amplitude > 255) config.amplitude = 255;
+      if (config.dcOffset < 0) config.dcOffset = 0;
+      if (config.dcOffset > 255) config.dcOffset = 255;
+      if (config.frequency < 1) config.frequency = 1; // Prevent divide-by-zero!
+      if (config.dutyCycle < 0) config.dutyCycle = 0;
+      if (config.dutyCycle > 100) config.dutyCycle = 100;
 
-      switch (config.waveformType) {
-        case 0: // DC
-          outputValue = config.amplitude;
-          break;
-        case 1: // Square
-          outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
-          outputValue += config.dcOffset;
-          break;
-        case 2: // Sine
-          {
-            float sineValue = sin(2 * PI * normalizedTime);
-            outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
+      if (config.isEnabled) {
+          float periodUs = 1000000.0 / config.frequency;
+          float timeInPeriod = fmod(micros(), periodUs);
+          float normalizedTime = timeInPeriod / periodUs;
+          if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
+
+          switch (config.waveformType) {
+              case 0: // DC
+                  outputValue = config.amplitude;
+                  break;
+              case 1: // Square
+                  outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
+                  outputValue += config.dcOffset;
+                  break;
+              case 2: // Sine
+                  {
+                      float sineValue = sin(2 * PI * normalizedTime);
+                      outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
+                  }
+                  break;
+              case 3: // Triangle
+                  {
+                      float triangleValue;
+                      if (normalizedTime < 0.5f) {
+                          triangleValue = 4.0f * normalizedTime - 1.0f; // -1 to 1
+                      } else {
+                          triangleValue = 3.0f - 4.0f * normalizedTime; // 1 to -1
+                      }
+                      outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
+                  }
+                  break;
+              case 4: // PWM
+                  {
+                      float dutyCycleNorm = config.dutyCycle / 100.0;
+                      outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
+                      outputValue += config.dcOffset;
+                  }
+                  break;
+              default:
+                  outputValue = 0;
           }
-          break;
-        case 3: // Triangle
-          {
-            float triangleValue;
-            if (normalizedTime < 0.5f) {
-              triangleValue = 4.0f * normalizedTime - 1.0f; // -1 to 1
-            } else {
-              triangleValue = 3.0f - 4.0f * normalizedTime; // 1 to -1
-            }
-            outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
-          }
-          break;
-        case 4: // PWM
-          {
-            float dutyCycleNorm = config.dutyCycle / 100.0;
-            outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
-            outputValue += config.dcOffset;
-          }
-          break;
-        default:
+          if (isnan(outputValue) || isinf(outputValue)) outputValue = 0;
+          outputValue = constrain(outputValue, 0, 255);
+      } else {
           outputValue = 0;
       }
-      // Clamp to valid DAC range
-      outputValue = constrain(outputValue, 0, 255);
-    } else {
-      outputValue = 0;
-    }
 
-    dacWrite(signalPin, outputValue);
+      dacWrite(signalPin, outputValue);
   }
 
 // ----------------------------
