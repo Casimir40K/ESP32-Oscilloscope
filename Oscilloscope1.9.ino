@@ -5,9 +5,9 @@
 
   #include <WiFi.h>
   #include <WebServer.h>
-  #include "chartjs_umd.h"
   #include <Arduino.h>
   #include "esp32-hal-timer.h"
+  #include "chartjs_umd.h"
 
 // ----------------------------
 //        CONFIGURATION
@@ -18,38 +18,34 @@
   const char* ap_password = "12345678";
 
   #define NUM_CHANNELS 6
-  #define MAX_SAMPLES 500  // Maximum buffer size
+  #define MAX_SAMPLES 500
   #define LED_PIN 2
   const int analogPins[NUM_CHANNELS] = {34, 35, 32, 33, 36, 39};
-  const int triggerPin = 27;  // Note: Will be reconfigured as output for signal generation
-  const int signalPin = 26;   // GPIO26 for signal generation
+  const int triggerPin = 27;
+  const int signalPin = 26; // GPIO26 for signal generation
 
 // ----------------------------
-//    ADJUSTABLE PARAMETERS
+//    DATA STRUCTURES
 // ----------------------------
   struct SamplingConfig {
-    int numSamples = 100;           // Number of samples per capture (10-500)
-    int sampleRateUs = 100;         // Microseconds between samples (10-10000)
-    int channelDelayUs = 5;         // Microseconds between channel reads (1-100)
-    int captureIntervalMs = 50;     // Milliseconds between captures in continuous mode (10-5000)
-    int webUpdateMs = 500;          // Milliseconds between web updates (100-5000)
+    int numSamples = 100;
+    int sampleRateUs = 100;
+    int channelDelayUs = 5;
+    int captureIntervalMs = 50;
+    int webUpdateMs = 500;
   } samplingConfig;
 
   struct SignalConfig {
-    int waveformType = 0;           // 0=DC, 1=Square, 2=Sine, 3=Triangle, 4=PWM
-    int amplitude = 255;            // DAC value (0-255, ~0-3.3V)
-    int frequency = 1000;           // Frequency in Hz (1-50000)
-    int pulseWidthMs = 100;         // Pulse width in ms for single pulse (1-10000)
-    int dutyCycle = 50;             // Duty cycle percentage for PWM (1-99)
-    bool isEnabled = false;         // Signal generator on/off
-    bool singlePulse = false;       // Single pulse mode
-    int dcOffset = 128;             // DC offset for AC waveforms (0-255)
+    int waveformType = 0;   // 0=DC, 1=Square, 2=Sine, 3=Triangle, 4=PWM
+    int amplitude = 255;    // 0-255
+    int frequency = 1000;   // Hz
+    int pulseWidthMs = 100; // ms
+    int dutyCycle = 50;     // %
+    bool isEnabled = false;
+    bool singlePulse = false;
+    int dcOffset = 128;     // 0-255
   } signalConfig;
 
-  // Mutex for atomic signalConfig access
-  portMUX_TYPE signalMux = portMUX_INITIALIZER_UNLOCKED;
-
-  // Presets for oscilloscope
   struct Preset {
     const char* name;
     int samples;
@@ -58,16 +54,14 @@
     int captureInterval;
     int webUpdate;
   };
-
   const Preset presets[] = {
-    {"High Speed", 100, 10, 1, 20, 200},      // Fast sampling, low resolution
-    {"Balanced", 200, 100, 5, 50, 500},       // Default balanced settings
-    {"High Resolution", 500, 1000, 10, 200, 1000}, // Slower but more detailed
-    {"Low Power", 50, 5000, 20, 1000, 2000}   // Power saving mode
+    {"High Speed", 100, 10, 1, 20, 200},
+    {"Balanced", 200, 100, 5, 50, 500},
+    {"High Resolution", 500, 1000, 10, 200, 1000},
+    {"Low Power", 50, 5000, 20, 1000, 2000}
   };
   const int numPresets = sizeof(presets) / sizeof(presets[0]);
 
-  // Signal generator presets
   struct SignalPreset {
     const char* name;
     int waveform;
@@ -76,13 +70,12 @@
     int dutyCycle;
     int dcOffset;
   };
-
   const SignalPreset signalPresets[] = {
-    {"1kHz Square", 1, 255, 1000, 50, 128},     // 1kHz square wave
-    {"10kHz Sine", 2, 200, 10000, 50, 128},     // 10kHz sine wave
-    {"PWM 25%", 4, 255, 1000, 25, 0},           // PWM 25% duty cycle
-    {"Test Signal", 1, 128, 100, 50, 64},       // Low amplitude test
-    {"DC 1.65V", 0, 128, 0, 0, 128}             // DC voltage reference
+    {"1kHz Square", 1, 255, 1000, 50, 128},
+    {"10kHz Sine", 2, 200, 10000, 50, 128},
+    {"PWM 25%", 4, 255, 1000, 25, 0},
+    {"Test Signal", 1, 128, 100, 50, 64},
+    {"DC 1.65V", 0, 128, 0, 0, 128}
   };
   const int numSignalPresets = sizeof(signalPresets) / sizeof(signalPresets[0]);
 
@@ -103,20 +96,33 @@
   float signalPhase = 0.0;
   const long blinkInterval = 500;
 
+  // Mutex for atomic signalConfig access
+  portMUX_TYPE signalMux = portMUX_INITIALIZER_UNLOCKED;
+
   WebServer server(80);
+  hw_timer_t *signalTimer = nullptr;
 
   // Forward declarations
   void updateSignalOutput();
   void startSinglePulse();
   void handleGetSignalConfig();
+  void connectWiFi();
+  void startAP();
+  void captureWaveform();
+  void handleRoot();
+  void handleData();
+  void handleGetConfig();
+  void handleSetConfig();
+  void handleChartJS();
+  void handleSetMode();
+  void handleSetSignalConfig();
+  void handleToggleSignal();
+  void handleSinglePulse();
+  void handleGetSignalStatus();
+  void handleGetSignalConfig();
+  void handleNotFound();
+  void setupServerRoutes();
 
-  // Timer for signal generation
-  hw_timer_t *signalTimer = nullptr;
-
-  // The ISR for the hardware timer (3.x API expects void *arg)
-  void IRAM_ATTR onSignalTimer() {
-    updateSignalOutput();
-  }
 // ----------------------------
 //      HTML Page String 
 // ----------------------------
@@ -846,89 +852,6 @@
 // ----------------------------
 //   SIGNAL GENERATION LOGIC
 // ----------------------------
-  /* void updateSignalOutput() {
-    // Atomically copy config for ISR safety
-    portENTER_CRITICAL_ISR(&signalMux);
-    SignalConfig config = signalConfig;
-    portEXIT_CRITICAL_ISR(&signalMux);
-
-    if (config.amplitude < 0 || config.amplitude > 255) config.amplitude = 128;
-    if (config.dcOffset < 0 || config.dcOffset > 255) config.dcOffset = 0;
-    if (config.frequency <= 0) config.frequency = 1000;
-    if (config.dutyCycle < 0 || config.dutyCycle > 100) config.dutyCycle = 50;
-
-    if (!config.isEnabled) {
-      dacWrite(signalPin, 0);
-      return;
-    }
-
-    unsigned long currentMicros = micros();
-
-    // Handle single pulse mode
-    if (config.singlePulse) {
-      if (pulseActive) {
-        if ((millis() - pulseStartTime) >= (unsigned long)config.pulseWidthMs) {
-          pulseActive = false;
-          portENTER_CRITICAL_ISR(&signalMux);
-          signalConfig.isEnabled = false;
-          signalConfig.singlePulse = false;
-          portEXIT_CRITICAL_ISR(&signalMux);
-          dacWrite(signalPin, 0);
-          return;
-        }
-        dacWrite(signalPin, config.amplitude);
-      }
-      return;
-    }
-
-    float periodUs = (config.frequency > 0) ? (1000000.0 / config.frequency) : 1000000.0;
-    float timeInPeriod = fmod(currentMicros, periodUs);
-    float normalizedTime = timeInPeriod / periodUs; // 0.0 to 1.0
-    if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
-
-    int outputValue = 0;
-
-    switch (config.waveformType) {
-      case 0: // DC
-        outputValue = config.amplitude;
-        break;
-
-      case 1: // Square Wave
-        outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
-        outputValue += config.dcOffset;
-        break;
-
-      case 2: // Sine Wave
-        {
-          float sineValue = sin(2 * PI * normalizedTime);
-          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
-        }
-        break;
-
-      case 3: // Triangle Wave
-        {
-          float triangleValue;
-          if (normalizedTime < 0.5) {
-            triangleValue = 4 * normalizedTime - 1; // -1 to 1
-          } else {
-            triangleValue = 3 - 4 * normalizedTime; // 1 to -1
-          }
-          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0));
-        }
-        break;
-
-      case 4: // PWM
-        {
-          float dutyCycleNorm = config.dutyCycle / 100.0;
-          outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
-        }
-        break;
-    }
-
-    // Clamp output to valid DAC range
-    outputValue = constrain(outputValue, 0, 255);
-    dacWrite(signalPin, outputValue);
-  } */
   void updateSignalOutput() {
     int outputValue = 0;
 
@@ -947,6 +870,10 @@
         case 0: // DC
           outputValue = config.amplitude;
           break;
+        case 1: // Square
+          outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
+          outputValue += config.dcOffset;
+          break;
         case 2: // Sine
           {
             float sineValue = sin(2 * PI * normalizedTime);
@@ -957,13 +884,18 @@
           {
             float triangleValue;
             if (normalizedTime < 0.5f) {
-              // Rising edge
               triangleValue = 4.0f * normalizedTime - 1.0f; // -1 to 1
             } else {
-              // Falling edge
               triangleValue = 3.0f - 4.0f * normalizedTime; // 1 to -1
             }
             outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
+          }
+          break;
+        case 4: // PWM
+          {
+            float dutyCycleNorm = config.dutyCycle / 100.0;
+            outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
+            outputValue += config.dcOffset;
           }
           break;
         default:
@@ -1012,7 +944,6 @@
 
   void handleData() {
     captureWaveform();
-
     String json = "{\"channels\":[";
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
       json += "[";
@@ -1024,7 +955,6 @@
       if (ch < NUM_CHANNELS - 1) json += ",";
     }
     json += "]}";
-
     server.send(200, "application/json", json);
   }
 
@@ -1036,7 +966,6 @@
     json += "\"captureInterval\":" + String(samplingConfig.captureIntervalMs) + ",";
     json += "\"webUpdate\":" + String(samplingConfig.webUpdateMs);
     json += "}";
-
     server.send(200, "application/json", json);
   }
 
@@ -1093,6 +1022,7 @@
     }
   }
 
+  // --------- Signal Generator Endpoints ----------
   void handleSetSignalConfig() {
     if (server.hasArg("plain")) {
       String body = server.arg("plain");
@@ -1112,7 +1042,6 @@
       if (pulseWidthMs >= 1 && pulseWidthMs <= 10000) signalConfig.pulseWidthMs = pulseWidthMs;
       portEXIT_CRITICAL(&signalMux);
 
-      // ---- Serial Print Section ----
       Serial.println("Signal generator configuration updated:");
       Serial.println("  Waveform: " + String(signalConfig.waveformType));
       Serial.println("  Amplitude: " + String(signalConfig.amplitude));
@@ -1120,7 +1049,6 @@
       Serial.println("  Duty Cycle: " + String(signalConfig.dutyCycle) + " %");
       Serial.println("  DC Offset: " + String(signalConfig.dcOffset));
       Serial.println("  Pulse Width: " + String(signalConfig.pulseWidthMs) + " ms");
-      // -----------------------------
 
       server.send(200, "text/plain", "Signal configuration updated");
     } else {
@@ -1150,6 +1078,15 @@
     server.send(200, "application/json", json);
   }
 
+  void startSinglePulse() {
+    portENTER_CRITICAL(&signalMux);
+    signalConfig.singlePulse = true;
+    signalConfig.isEnabled = true;
+    portEXIT_CRITICAL(&signalMux);
+    pulseStartTime = millis();
+    pulseActive = true;
+  }
+
   void handleSinglePulse() {
     startSinglePulse();
     Serial.println("Single pulse triggered:");
@@ -1170,20 +1107,6 @@
     server.send(200, "application/json", json);
   }
 
-  void handleNotFound() {
-    Serial.println("404: " + server.uri());
-    server.send(404, "text/plain", "404: Not Found");
-  }
-
-  void startSinglePulse() {
-    portENTER_CRITICAL(&signalMux);
-    signalConfig.singlePulse = true;
-    signalConfig.isEnabled = true;
-    portEXIT_CRITICAL(&signalMux);
-    pulseStartTime = millis();
-    pulseActive = true;
-  }
-
   void handleGetSignalConfig() {
     String json = "{";
     json += "\"waveformType\":" + String(signalConfig.waveformType) + ",";
@@ -1197,36 +1120,47 @@
     server.send(200, "application/json", json);
   }
 
+  void handleNotFound() {
+    Serial.println("404: " + server.uri());
+    server.send(404, "text/plain", "404: Not Found");
+  }
+
 // ----------------------------
 //      SERVER ROUTES
 // ----------------------------
-    void setupServerRoutes() {
-      server.on("/", HTTP_GET, handleRoot);
-      server.on("/data", HTTP_GET, handleData);
-      server.on("/getConfig", HTTP_GET, handleGetConfig);
-      server.on("/setConfig", HTTP_POST, handleSetConfig);
-      server.on("/chart.js", HTTP_GET, handleChartJS);
-      server.on("/setMode", HTTP_GET, handleSetMode);
+  void setupServerRoutes() {
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/data", HTTP_GET, handleData);
+    server.on("/getConfig", HTTP_GET, handleGetConfig);
+    server.on("/setConfig", HTTP_POST, handleSetConfig);
+    server.on("/chart.js", HTTP_GET, handleChartJS);
+    server.on("/setMode", HTTP_GET, handleSetMode);
 
-      // Signal generator endpoints
-/*       server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
-      server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
-      server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
-      server.on("/singlePulse", HTTP_POST, handleSinglePulse);
-      server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus); */
+    // Signal generator endpoints
+    server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
+    server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
+    server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
+    server.on("/singlePulse", HTTP_POST, handleSinglePulse);
+    server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
 
-      server.onNotFound(handleNotFound);
-    }
+    server.onNotFound(handleNotFound);
+  }
 
   // ----------------------------
-  //            SETUP
+  //     SIGNAL TIMER ISR HOOK
   // ----------------------------
+  void IRAM_ATTR onSignalTimer() {
+    updateSignalOutput();
+  }
+
+// ----------------------------
+//            SETUP
+// ----------------------------
   void setup() {
     Serial.begin(115200);
     Serial.println("ESP32 Oscilloscope & Signal Generator Starting...");
 
     pinMode(LED_PIN, OUTPUT);
-    // Set up signal pin for DAC output
     pinMode(signalPin, OUTPUT);
 
     // Initialize waveform data
@@ -1261,14 +1195,12 @@
       Serial.println("Connect to: http://" + WiFi.softAPIP().toString());
     }
 
+    // Setup signal generation timer
     signalTimer = timerBegin(10000); // 10kHz timer
-
-    // Attach the ISR (no void* argument!)
     timerAttachInterrupt(signalTimer, &onSignalTimer);
-
-    // Set the alarm to trigger every 100us (10kHz): 1 tick, auto-reload
-    timerAlarm(signalTimer, 1, true, 0); 
+    timerAlarm(signalTimer, 1, true, 0); // Trigger every 100us (10kHz): 1 tick, auto-reload
   }
+
 // ----------------------------
 //             LOOP
 // ----------------------------
@@ -1306,6 +1238,7 @@
       digitalWrite(LED_PIN, LOW);
     }
 
+    // Debug print once per second
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 1000) {
       lastDebug = millis();
@@ -1320,5 +1253,4 @@
       Serial.print(", pulseStartTime="); Serial.println(pulseStartTime);
       Serial.println("--------------");
     }
-
   }
