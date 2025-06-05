@@ -107,14 +107,12 @@
   void startSinglePulse();
 
   // Timer for signal generation
-  hw_timer_t * signalTimer = NULL;
-  portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+  hw_timer_t *signalTimer = nullptr;
 
-  // The ISR for the hardware timer:
+  // The ISR for the hardware timer (3.x API expects void *arg)
   void IRAM_ATTR onSignalTimer() {
     updateSignalOutput();
   }
-
 // ----------------------------
 //      HTML Page String 
 // ----------------------------
@@ -845,6 +843,12 @@
 //   SIGNAL GENERATION LOGIC
 // ----------------------------
   void updateSignalOutput() {
+    // Defensive checks
+    if (signalConfig.amplitude < 0 || signalConfig.amplitude > 255) signalConfig.amplitude = 128;
+    if (signalConfig.dcOffset < 0 || signalConfig.dcOffset > 255) signalConfig.dcOffset = 0;
+    if (signalConfig.frequency <= 0) signalConfig.frequency = 1000;
+    if (signalConfig.dutyCycle < 0 || signalConfig.dutyCycle > 100) signalConfig.dutyCycle = 50;
+
     if (!signalConfig.isEnabled) {
       dacWrite(signalPin, 0);
       return;
@@ -867,7 +871,6 @@
       return;
     }
 
-    // Calculate time-based parameters
     float periodUs = (signalConfig.frequency > 0) ? (1000000.0 / signalConfig.frequency) : 1000000.0;
     float timeInPeriod = fmod(currentMicros, periodUs);
     float normalizedTime = timeInPeriod / periodUs; // 0.0 to 1.0
@@ -914,13 +917,6 @@
     // Clamp output to valid DAC range
     outputValue = constrain(outputValue, 0, 255);
     dacWrite(signalPin, outputValue);
-  }
-
-  void startSinglePulse() {
-    signalConfig.singlePulse = true;
-    signalConfig.isEnabled = true;
-    pulseStartTime = millis();
-    pulseActive = true;
   }
 
 // ----------------------------
@@ -1129,30 +1125,37 @@
     server.send(404, "text/plain", "404: Not Found");
   }
 
-// ----------------------------
-//      SERVER ROUTES
-// ----------------------------
-  void setupServerRoutes() {
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/data", HTTP_GET, handleData);
-    server.on("/getConfig", HTTP_GET, handleGetConfig);
-    server.on("/setConfig", HTTP_POST, handleSetConfig);
-    server.on("/chart.js", HTTP_GET, handleChartJS);
-    server.on("/setMode", HTTP_GET, handleSetMode);
-
-    // Signal generator endpoints
-    server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
-    server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
-    server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
-    server.on("/singlePulse", HTTP_POST, handleSinglePulse);
-    server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
-
-    server.onNotFound(handleNotFound);
+  void startSinglePulse() {
+    signalConfig.singlePulse = true;
+    signalConfig.isEnabled = true;
+    pulseStartTime = millis();
+    pulseActive = true;
   }
 
 // ----------------------------
-//            SETUP
+//      SERVER ROUTES
 // ----------------------------
+    void setupServerRoutes() {
+      server.on("/", HTTP_GET, handleRoot);
+      server.on("/data", HTTP_GET, handleData);
+      server.on("/getConfig", HTTP_GET, handleGetConfig);
+      server.on("/setConfig", HTTP_POST, handleSetConfig);
+      server.on("/chart.js", HTTP_GET, handleChartJS);
+      server.on("/setMode", HTTP_GET, handleSetMode);
+
+      // Signal generator endpoints
+      server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
+      server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
+      server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
+      server.on("/singlePulse", HTTP_POST, handleSinglePulse);
+      server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
+
+      server.onNotFound(handleNotFound);
+    }
+
+  // ----------------------------
+  //            SETUP
+  // ----------------------------
   void setup() {
     Serial.begin(115200);
     Serial.println("ESP32 Oscilloscope & Signal Generator Starting...");
@@ -1192,16 +1195,19 @@
     } else {
       Serial.println("Connect to: http://" + WiFi.softAPIP().toString());
     }
-  
 
-    signalTimer = timerBegin(10000); // Timer 0, 80 prescaler (1us per tick)
-    // Attach the interrupt handler
-    timerSetCallback(signalTimer, &onSignalTimer, true);
+  signalTimer = timerBegin(10000); // 10kHz timer
 
-    // Start the timer interrupts
-    timerAlarm(signalTimer);
-    }
+  // Attach the ISR (no void* argument!)
+  timerAttachInterrupt(signalTimer, &onSignalTimer);
 
+  // Set the alarm to trigger every 100us (10kHz): 100 ticks @ 1us/tick
+  //timerSetAlarm(signalTimer, 1, true); // 1 tick, auto-reload
+
+
+  // Enable the timer alarm
+  timerAlarm(signalTimer, 1, true, 0); 
+  }
 // ----------------------------
 //             LOOP
 // ----------------------------
@@ -1226,13 +1232,14 @@
       }
     }
 
-  /*     // Signal generator update
+    /*     // Signal generator update
       if (signalConfig.isEnabled || signalConfig.singlePulse) {
         pinMode(signalPin, OUTPUT);
         updateSignalOutput();
       } else {
         dacWrite(signalPin, 0);
       } */
+
 
     // Network Indicator LED
     if (apStarted) {
