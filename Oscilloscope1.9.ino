@@ -46,6 +46,9 @@
     int dcOffset = 128;             // DC offset for AC waveforms (0-255)
   } signalConfig;
 
+  // Mutex for atomic signalConfig access
+  portMUX_TYPE signalMux = portMUX_INITIALIZER_UNLOCKED;
+
   // Presets for oscilloscope
   struct Preset {
     const char* name;
@@ -105,6 +108,7 @@
   // Forward declarations
   void updateSignalOutput();
   void startSinglePulse();
+  void handleGetSignalConfig();
 
   // Timer for signal generation
   hw_timer_t *signalTimer = nullptr;
@@ -842,14 +846,18 @@
 // ----------------------------
 //   SIGNAL GENERATION LOGIC
 // ----------------------------
-  void updateSignalOutput() {
-    // Defensive checks
-    if (signalConfig.amplitude < 0 || signalConfig.amplitude > 255) signalConfig.amplitude = 128;
-    if (signalConfig.dcOffset < 0 || signalConfig.dcOffset > 255) signalConfig.dcOffset = 0;
-    if (signalConfig.frequency <= 0) signalConfig.frequency = 1000;
-    if (signalConfig.dutyCycle < 0 || signalConfig.dutyCycle > 100) signalConfig.dutyCycle = 50;
+  /* void updateSignalOutput() {
+    // Atomically copy config for ISR safety
+    portENTER_CRITICAL_ISR(&signalMux);
+    SignalConfig config = signalConfig;
+    portEXIT_CRITICAL_ISR(&signalMux);
 
-    if (!signalConfig.isEnabled) {
+    if (config.amplitude < 0 || config.amplitude > 255) config.amplitude = 128;
+    if (config.dcOffset < 0 || config.dcOffset > 255) config.dcOffset = 0;
+    if (config.frequency <= 0) config.frequency = 1000;
+    if (config.dutyCycle < 0 || config.dutyCycle > 100) config.dutyCycle = 50;
+
+    if (!config.isEnabled) {
       dacWrite(signalPin, 0);
       return;
     }
@@ -857,40 +865,43 @@
     unsigned long currentMicros = micros();
 
     // Handle single pulse mode
-    if (signalConfig.singlePulse) {
+    if (config.singlePulse) {
       if (pulseActive) {
-        if ((millis() - pulseStartTime) >= (unsigned long)signalConfig.pulseWidthMs) {
+        if ((millis() - pulseStartTime) >= (unsigned long)config.pulseWidthMs) {
           pulseActive = false;
+          portENTER_CRITICAL_ISR(&signalMux);
           signalConfig.isEnabled = false;
           signalConfig.singlePulse = false;
+          portEXIT_CRITICAL_ISR(&signalMux);
           dacWrite(signalPin, 0);
           return;
         }
-        dacWrite(signalPin, signalConfig.amplitude);
+        dacWrite(signalPin, config.amplitude);
       }
       return;
     }
 
-    float periodUs = (signalConfig.frequency > 0) ? (1000000.0 / signalConfig.frequency) : 1000000.0;
+    float periodUs = (config.frequency > 0) ? (1000000.0 / config.frequency) : 1000000.0;
     float timeInPeriod = fmod(currentMicros, periodUs);
     float normalizedTime = timeInPeriod / periodUs; // 0.0 to 1.0
+    if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
 
     int outputValue = 0;
 
-    switch (signalConfig.waveformType) {
+    switch (config.waveformType) {
       case 0: // DC
-        outputValue = signalConfig.amplitude;
+        outputValue = config.amplitude;
         break;
 
       case 1: // Square Wave
-        outputValue = (normalizedTime < 0.5) ? signalConfig.amplitude : 0;
-        outputValue += signalConfig.dcOffset;
+        outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
+        outputValue += config.dcOffset;
         break;
 
       case 2: // Sine Wave
         {
           float sineValue = sin(2 * PI * normalizedTime);
-          outputValue = signalConfig.dcOffset + (signalConfig.amplitude * sineValue / 2);
+          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
         }
         break;
 
@@ -902,20 +913,68 @@
           } else {
             triangleValue = 3 - 4 * normalizedTime; // 1 to -1
           }
-          outputValue = signalConfig.dcOffset + (signalConfig.amplitude * triangleValue / 2);
+          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0));
         }
         break;
 
       case 4: // PWM
         {
-          float dutyCycleNorm = signalConfig.dutyCycle / 100.0;
-          outputValue = (normalizedTime < dutyCycleNorm) ? signalConfig.amplitude : 0;
+          float dutyCycleNorm = config.dutyCycle / 100.0;
+          outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
         }
         break;
     }
 
     // Clamp output to valid DAC range
     outputValue = constrain(outputValue, 0, 255);
+    dacWrite(signalPin, outputValue);
+  } */
+  void updateSignalOutput() {
+    int outputValue = 0;
+
+    // Safely copy config for use in ISR
+    portENTER_CRITICAL_ISR(&signalMux);
+    SignalConfig config = signalConfig;
+    portEXIT_CRITICAL_ISR(&signalMux);
+
+    if (config.isEnabled) {
+      float periodUs = (config.frequency > 0) ? (1000000.0 / config.frequency) : 1000000.0;
+      float timeInPeriod = fmod(micros(), periodUs);
+      float normalizedTime = timeInPeriod / periodUs;
+      if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
+
+      switch (config.waveformType) {
+        case 0: // DC
+          outputValue = config.amplitude;
+          break;
+        case 2: // Sine
+          {
+            float sineValue = sin(2 * PI * normalizedTime);
+            outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
+          }
+          break;
+        case 3: // Triangle
+          {
+            float triangleValue;
+            if (normalizedTime < 0.5f) {
+              // Rising edge
+              triangleValue = 4.0f * normalizedTime - 1.0f; // -1 to 1
+            } else {
+              // Falling edge
+              triangleValue = 3.0f - 4.0f * normalizedTime; // 1 to -1
+            }
+            outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
+          }
+          break;
+        default:
+          outputValue = 0;
+      }
+      // Clamp to valid DAC range
+      outputValue = constrain(outputValue, 0, 255);
+    } else {
+      outputValue = 0;
+    }
+
     dacWrite(signalPin, outputValue);
   }
 
@@ -1044,12 +1103,14 @@
       int dcOffset = extractJsonInt(body, "dcOffset");
       int pulseWidthMs = extractJsonInt(body, "pulseWidthMs");
 
+      portENTER_CRITICAL(&signalMux);
       if (waveformType >= 0 && waveformType <= 4) signalConfig.waveformType = waveformType;
       if (amplitude >= 0 && amplitude <= 255) signalConfig.amplitude = amplitude;
       if (frequency >= 0 && frequency <= 50000) signalConfig.frequency = frequency;
       if (dutyCycle >= 1 && dutyCycle <= 99) signalConfig.dutyCycle = dutyCycle;
       if (dcOffset >= 0 && dcOffset <= 255) signalConfig.dcOffset = dcOffset;
       if (pulseWidthMs >= 1 && pulseWidthMs <= 10000) signalConfig.pulseWidthMs = pulseWidthMs;
+      portEXIT_CRITICAL(&signalMux);
 
       // ---- Serial Print Section ----
       Serial.println("Signal generator configuration updated:");
@@ -1067,23 +1128,12 @@
     }
   }
 
-  void handleGetSignalConfig() {
-    String json = "{";
-    json += "\"waveformType\":" + String(signalConfig.waveformType) + ",";
-    json += "\"amplitude\":" + String(signalConfig.amplitude) + ",";
-    json += "\"frequency\":" + String(signalConfig.frequency) + ",";
-    json += "\"dutyCycle\":" + String(signalConfig.dutyCycle) + ",";
-    json += "\"dcOffset\":" + String(signalConfig.dcOffset) + ",";
-    json += "\"pulseWidthMs\":" + String(signalConfig.pulseWidthMs) + ",";
-    json += "\"isEnabled\":" + String(signalConfig.isEnabled ? "true" : "false");
-    json += "}";
-
-    server.send(200, "application/json", json);
-  }
-
   void handleToggleSignal() {
+    portENTER_CRITICAL(&signalMux);
     signalConfig.isEnabled = !signalConfig.isEnabled;
     signalConfig.singlePulse = false;
+    portEXIT_CRITICAL(&signalMux);
+
     if (!signalConfig.isEnabled) {
       dacWrite(signalPin, 0);
       Serial.println("Signal generator disabled.");
@@ -1126,10 +1176,25 @@
   }
 
   void startSinglePulse() {
+    portENTER_CRITICAL(&signalMux);
     signalConfig.singlePulse = true;
     signalConfig.isEnabled = true;
+    portEXIT_CRITICAL(&signalMux);
     pulseStartTime = millis();
     pulseActive = true;
+  }
+
+  void handleGetSignalConfig() {
+    String json = "{";
+    json += "\"waveformType\":" + String(signalConfig.waveformType) + ",";
+    json += "\"amplitude\":" + String(signalConfig.amplitude) + ",";
+    json += "\"frequency\":" + String(signalConfig.frequency) + ",";
+    json += "\"dutyCycle\":" + String(signalConfig.dutyCycle) + ",";
+    json += "\"dcOffset\":" + String(signalConfig.dcOffset) + ",";
+    json += "\"pulseWidthMs\":" + String(signalConfig.pulseWidthMs) + ",";
+    json += "\"isEnabled\":" + String(signalConfig.isEnabled ? "true" : "false");
+    json += "}";
+    server.send(200, "application/json", json);
   }
 
 // ----------------------------
@@ -1144,11 +1209,11 @@
       server.on("/setMode", HTTP_GET, handleSetMode);
 
       // Signal generator endpoints
-      server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
+/*       server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
       server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
       server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
       server.on("/singlePulse", HTTP_POST, handleSinglePulse);
-      server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
+      server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus); */
 
       server.onNotFound(handleNotFound);
     }
@@ -1196,17 +1261,13 @@
       Serial.println("Connect to: http://" + WiFi.softAPIP().toString());
     }
 
-  signalTimer = timerBegin(10000); // 10kHz timer
+    signalTimer = timerBegin(10000); // 10kHz timer
 
-  // Attach the ISR (no void* argument!)
-  timerAttachInterrupt(signalTimer, &onSignalTimer);
+    // Attach the ISR (no void* argument!)
+    timerAttachInterrupt(signalTimer, &onSignalTimer);
 
-  // Set the alarm to trigger every 100us (10kHz): 100 ticks @ 1us/tick
-  //timerSetAlarm(signalTimer, 1, true); // 1 tick, auto-reload
-
-
-  // Enable the timer alarm
-  timerAlarm(signalTimer, 1, true, 0); 
+    // Set the alarm to trigger every 100us (10kHz): 1 tick, auto-reload
+    timerAlarm(signalTimer, 1, true, 0); 
   }
 // ----------------------------
 //             LOOP
@@ -1232,15 +1293,6 @@
       }
     }
 
-    /*     // Signal generator update
-      if (signalConfig.isEnabled || signalConfig.singlePulse) {
-        pinMode(signalPin, OUTPUT);
-        updateSignalOutput();
-      } else {
-        dacWrite(signalPin, 0);
-      } */
-
-
     // Network Indicator LED
     if (apStarted) {
       digitalWrite(LED_PIN, HIGH);
@@ -1253,4 +1305,20 @@
     } else {
       digitalWrite(LED_PIN, LOW);
     }
+
+    static unsigned long lastDebug = 0;
+    if (millis() - lastDebug > 1000) {
+      lastDebug = millis();
+      Serial.println("--- DEBUG ---");
+      Serial.print("signalConfig: ");
+      Serial.print("isEnabled="); Serial.print(signalConfig.isEnabled);
+      Serial.print(", singlePulse="); Serial.print(signalConfig.singlePulse);
+      Serial.print(", amplitude="); Serial.print(signalConfig.amplitude);
+      Serial.print(", frequency="); Serial.print(signalConfig.frequency);
+      Serial.print(", waveformType="); Serial.println(signalConfig.waveformType);
+      Serial.print("pulseActive="); Serial.print(pulseActive);
+      Serial.print(", pulseStartTime="); Serial.println(pulseStartTime);
+      Serial.println("--------------");
+    }
+
   }
