@@ -5,7 +5,7 @@
 
   #include <WiFi.h>
   #include <WebServer.h>
-  #include <Arduino.h>
+  //#include <Arduino.h>
   #include <SPIFFS.h>
 
 
@@ -36,7 +36,7 @@
   } samplingConfig;
 
   struct SignalConfig {
-    int waveformType = 0;   // 0=DC, 1=Square, 2=Sine, 3=Triangle, 4=PWM
+    int waveformType = 2;   // 0=DC, 1=Square, 2=Sine, 3=Triangle, 4=PWM
     int amplitude = 255;    // 0-255
     int frequency = 1000;   // Hz
     int pulseWidthMs = 100; // ms
@@ -93,13 +93,37 @@
   unsigned long signalLastUpdate = 0;
   volatile unsigned long pulseStartTime = 0;
   volatile bool pulseActive = false;
-  float signalPhase = 0.0;
+  //float signalPhase = 0.0;
   const long blinkInterval = 500;
 
   // Mutex for atomic signalConfig access
   portMUX_TYPE signalMux = portMUX_INITIALIZER_UNLOCKED;
 
   WebServer server(80);
+
+  // --- Helper for content types ---
+  String getContentType(String filename) {
+    if (filename.endsWith(".html")) return "text/html";
+    if (filename.endsWith(".css"))  return "text/css";
+    if (filename.endsWith(".js"))   return "application/javascript";
+    if (filename.endsWith(".json")) return "application/json";
+    if (filename.endsWith(".ico"))  return "image/x-icon";
+    return "text/plain";
+  }
+
+  // --- Serve files from SPIFFS ---
+  void handleFileRequest() {
+    String path = server.uri();
+    if (path == "/") path = "/index.html";
+    if (!SPIFFS.exists(path)) {
+      server.send(404, "text/plain", "File Not Found: " + path);
+      return;
+    }
+    File file = SPIFFS.open(path, "r");
+    server.streamFile(file, getContentType(path));
+    file.close();
+  }
+
   hw_timer_t *signalTimer = nullptr;
 
   // Forward declarations
@@ -478,6 +502,11 @@
 // ----------------------------
   void setupServerRoutes() {
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/index.html", HTTP_GET, handleFileRequest);
+    server.on("/style.css", HTTP_GET, handleFileRequest);
+    server.on("/chart.js", HTTP_GET, handleFileRequest);
+    server.on("/app.js", HTTP_GET, handleFileRequest);
+
     server.on("/data", HTTP_GET, handleData);
     server.on("/getConfig", HTTP_GET, handleGetConfig);
     server.on("/setConfig", HTTP_POST, handleSetConfig);
@@ -491,12 +520,12 @@
     server.on("/singlePulse", HTTP_POST, handleSinglePulse);
     server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
 
-    server.onNotFound(handleNotFound);
+    server.onNotFound(handleFileRequest); // fallback
   }
 
-  // ----------------------------
-  //     SIGNAL TIMER ISR HOOK
-  // ----------------------------
+// ----------------------------
+//     SIGNAL TIMER ISR HOOK
+// ----------------------------
   void IRAM_ATTR onSignalTimer() {
     updateSignalOutput();
   }
@@ -510,6 +539,11 @@
 
     pinMode(LED_PIN, OUTPUT);
     pinMode(signalPin, OUTPUT);
+
+      if (!SPIFFS.begin(true)) {
+        Serial.println("SPIFFS Mount Failed");
+        return;
+      }
 
     // Initialize waveform data
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
