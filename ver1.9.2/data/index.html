@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+  <html>
+  <head>
+    <title>ESP32 Oscilloscope & Signal Generator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <h2>ESP32 Oscilloscope & Signal Generator</h2>
+    
+    <div class="status">
+      <span>Scope Mode: <span id="modeStatus">Continuous</span></span>
+      <span>Status: <span id="connectionStatus">Loading...</span></span>
+      <span>Samples: <span id="currentSamples">100</span></span>
+      <span>Rate: <span id="currentRate">100µs</span></span>
+    </div>
+    
+    <div class="signal-status" id="signalStatus">
+      <strong>Signal Generator:</strong> 
+      <span id="signalState">OFF</span> | 
+      <span id="signalInfo">DC 0V</span>
+    </div>
+    
+    <div class="controls">
+      <button onclick="toggleMode()">Toggle Scope Mode</button>
+      <button onclick="captureWaveform()">Manual Capture</button>
+      <button onclick="clearChart()">Clear Chart</button>
+      <button onclick="toggleSettings()">Settings</button>
+      <button onclick="toggleSignalSettings()">Signal Generator</button>
+    </div>
+    
+    <div class="two-column">
+      <div id="settingsPanel" class="settings" style="display: none;">
+        <h3>Oscilloscope Configuration</h3>
+        
+        <div class="presets">
+          <strong>Quick Presets:</strong><br>
+          <button class="preset" onclick="applyPreset(0)">High Speed</button>
+          <button class="preset" onclick="applyPreset(1)">Balanced</button>
+          <button class="preset" onclick="applyPreset(2)">High Resolution</button>
+          <button class="preset" onclick="applyPreset(3)">Low Power</button>
+        </div>
+        
+        <div class="setting-row">
+          <label>Samples:</label>
+          <input type="number" id="numSamples" min="10" max="500" value="100">
+          <span>(10-500)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Sample Rate:</label>
+          <input type="number" id="sampleRate" min="10" max="10000" value="100">
+          <span>µs (10-10000)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Channel Delay:</label>
+          <input type="number" id="channelDelay" min="1" max="100" value="5">
+          <span>µs (1-100)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Capture Interval:</label>
+          <input type="number" id="captureInterval" min="10" max="5000" value="50">
+          <span>ms (10-5000)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Web Update:</label>
+          <input type="number" id="webUpdate" min="100" max="5000" value="500">
+          <span>ms (100-5000)</span>
+        </div>
+        
+        <div class="setting-row">
+          <button onclick="applySettings()">Apply Settings</button>
+          <button onclick="resetToDefaults()">Reset Defaults</button>
+        </div>
+      </div>
+
+      <div id="signalPanel" class="settings" style="display: none;">
+        <h3>Signal Generator (GPIO26)</h3>
+        
+        <div class="presets">
+          <strong>Signal Presets:</strong><br>
+          <button class="preset" onclick="applySignalPreset(0)">1kHz Square</button>
+          <button class="preset" onclick="applySignalPreset(1)">10kHz Sine</button>
+          <button class="preset" onclick="applySignalPreset(2)">PWM 25%</button>
+          <button class="preset" onclick="applySignalPreset(3)">Test Signal</button>
+          <button class="preset" onclick="applySignalPreset(4)">DC 1.65V</button>
+        </div>
+        
+        <div class="setting-row">
+          <label>Waveform:</label>
+          <select id="waveformType">
+            <option value="0">DC</option>
+            <option value="1">Square</option>
+            <option value="2">Sine</option>
+            <option value="3">Triangle</option>
+            <option value="4">PWM</option>
+          </select>
+        </div>
+        
+        <div class="setting-row">
+          <label>Amplitude:</label>
+          <input type="number" id="amplitude" min="0" max="255" value="128">
+          <span>(0-255, ~0-3.3V)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Frequency:</label>
+          <input type="number" id="frequency" min="1" max="50000" value="1000">
+          <span>Hz (1-50000)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>DC Offset:</label>
+          <input type="number" id="dcOffset" min="0" max="255" value="128">
+          <span>(0-255)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>PWM Duty:</label>
+          <input type="number" id="dutyCycle" min="1" max="99" value="50">
+          <span>% (1-99)</span>
+        </div>
+        
+        <div class="setting-row">
+          <label>Pulse Width:</label>
+          <input type="number" id="pulseWidth" min="1" max="10000" value="100">
+          <span>ms (1-10000)</span>
+        </div>
+        
+        <div class="setting-row">
+          <button id="signalToggle" onclick="toggleSignal()">Start Signal</button>
+          <button class="pulse" onclick="sendSinglePulse()">Single Pulse</button>
+          <button onclick="applySignalSettings()">Apply Settings</button>
+        </div>
+      </div>
+    </div>
+    
+    <canvas id="oscilloscope"></canvas>
+    
+    <div class="legend">
+      <p><strong>Oscilloscope Channels:</strong></p>
+      <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; margin-top: 8px;">
+        <span style="color: #ff6384;">CH1: GPIO34</span>
+        <span style="color: #36a2eb;">CH2: GPIO35</span>
+        <span style="color: #ffce56;">CH3: GPIO32</span>
+        <span style="color: #4bc0c0;">CH4: GPIO33</span>
+        <span style="color: #9966ff;">CH5: GPIO36</span>
+        <span style="color: #ff9f40;">CH6: GPIO39</span>
+      </div>
+      <p><strong>Signal Output:</strong> GPIO26 (DAC)</p>
+    </div>
+    
+    <script src="/chart.js"></script>
+    <script src="/app.js"></script>
+  </body>
+  </html>
