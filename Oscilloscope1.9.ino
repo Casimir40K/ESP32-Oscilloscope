@@ -856,9 +856,9 @@
       int outputValue = 0;
 
       // Safely copy config for use in ISR
-      portENTER_CRITICAL_ISR(&signalMux);
+      //portENTER_CRITICAL_ISR(&signalMux);
       SignalConfig config = signalConfig;
-      portEXIT_CRITICAL_ISR(&signalMux);
+      //portEXIT_CRITICAL_ISR(&signalMux);
 
       // Sanity checks
       if (config.amplitude < 0) config.amplitude = 0;
@@ -1042,13 +1042,27 @@
       int dcOffset = extractJsonInt(body, "dcOffset");
       int pulseWidthMs = extractJsonInt(body, "pulseWidthMs");
 
+      // REST handler safety: Validate all values before updating signalConfig
+      if (waveformType < 0 || waveformType > 4)
+        return server.send(400, "text/plain", "Invalid waveformType");
+      if (amplitude < 0 || amplitude > 255)
+        return server.send(400, "text/plain", "Invalid amplitude");
+      if (frequency < 1 || frequency > 50000)
+        return server.send(400, "text/plain", "Invalid frequency");
+      if (dutyCycle < 0 || dutyCycle > 100)
+        return server.send(400, "text/plain", "Invalid dutyCycle");
+      if (dcOffset < 0 || dcOffset > 255)
+        return server.send(400, "text/plain", "Invalid dcOffset");
+      if (pulseWidthMs < 1 || pulseWidthMs > 10000)
+        return server.send(400, "text/plain", "Invalid pulseWidthMs");
+
       portENTER_CRITICAL(&signalMux);
-      if (waveformType >= 0 && waveformType <= 4) signalConfig.waveformType = waveformType;
-      if (amplitude >= 0 && amplitude <= 255) signalConfig.amplitude = amplitude;
-      if (frequency >= 0 && frequency <= 50000) signalConfig.frequency = frequency;
-      if (dutyCycle >= 1 && dutyCycle <= 99) signalConfig.dutyCycle = dutyCycle;
-      if (dcOffset >= 0 && dcOffset <= 255) signalConfig.dcOffset = dcOffset;
-      if (pulseWidthMs >= 1 && pulseWidthMs <= 10000) signalConfig.pulseWidthMs = pulseWidthMs;
+      signalConfig.waveformType = waveformType;
+      signalConfig.amplitude = amplitude;
+      signalConfig.frequency = frequency;
+      signalConfig.dutyCycle = dutyCycle;
+      signalConfig.dcOffset = dcOffset;
+      signalConfig.pulseWidthMs = pulseWidthMs;
       portEXIT_CRITICAL(&signalMux);
 
       Serial.println("Signal generator configuration updated:");
