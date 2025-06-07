@@ -93,6 +93,7 @@ unsigned long lastCapture = 0;
 unsigned long signalLastUpdate = 0;
 volatile unsigned long pulseStartTime = 0;
 volatile bool pulseActive = false;
+volatile bool signalUpdateFlag = false;
 //float signalPhase = 0.0;
 const long blinkInterval = 500;
 
@@ -264,7 +265,7 @@ void updateSignalOutput() {
   } else {
     outputValue = 0;
   }
-
+  Serial.printf("SignalPin: %d, OutputValue: %d\n", signalPin, outputValue);
   dacWrite(signalPin, outputValue);
 }
 
@@ -526,7 +527,7 @@ void setupServerRoutes() {
 //     SIGNAL TIMER ISR HOOK
 // ----------------------------
 void IRAM_ATTR onSignalTimer() {
-  updateSignalOutput();
+  signalUpdateFlag = true; // Only set a flag!
 }
 
 // ----------------------------
@@ -579,7 +580,7 @@ void setup() {
   // Setup signal generation timer
   signalTimer = timerBegin(0, 80, true);                    // timer 0, prescaler 80 for 1us ticks, count up
   timerAttachInterrupt(signalTimer, &onSignalTimer, true);  // edge triggered
-  timerAlarmWrite(signalTimer, 100, true);                  // 100us interval, autoreload
+  timerAlarmWrite(signalTimer, 1000, true);                  // 100us interval, autoreload
   timerAlarmEnable(signalTimer);
 }
 
@@ -641,5 +642,10 @@ void loop() {
     Serial.print(", pulseStartTime=");
     Serial.println(pulseStartTime);
     Serial.println("--------------");
+  }
+
+  if (signalUpdateFlag) {
+    signalUpdateFlag = false;
+    updateSignalOutput(); // Do heavy work OUTSIDE ISR
   }
 }
