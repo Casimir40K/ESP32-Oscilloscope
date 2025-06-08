@@ -156,7 +156,7 @@ void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
-
+  
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -167,7 +167,7 @@ void connectWiFi() {
       return;
     }
   }
-
+  
   wifiConnected = true;
   Serial.print("\nWiFi Connected! IP: ");
   Serial.println(WiFi.localIP());
@@ -204,12 +204,12 @@ void captureWaveform() {
 // ----------------------------
 void updateSignalOutput() {
   int outputValue = 0;
-
+  
   // Safely copy config for use in ISR
   //portENTER_CRITICAL_ISR(&signalMux);
   SignalConfig config = signalConfig;
   //portEXIT_CRITICAL_ISR(&signalMux);
-
+  
   // Sanity checks
   if (config.amplitude < 0) config.amplitude = 0;
   if (config.amplitude > 255) config.amplitude = 255;
@@ -218,55 +218,55 @@ void updateSignalOutput() {
   if (config.frequency < 1) config.frequency = 1;  // Prevent divide-by-zero!
   if (config.dutyCycle < 0) config.dutyCycle = 0;
   if (config.dutyCycle > 100) config.dutyCycle = 100;
-
+  
   if (config.isEnabled) {
     float periodUs = 1000000.0 / config.frequency;
     float timeInPeriod = fmod(micros(), periodUs);
     float normalizedTime = timeInPeriod / periodUs;
     if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
-
+    
     switch (config.waveformType) {
       case 0:  // DC
-        outputValue = config.amplitude;
-        break;
+      outputValue = config.amplitude;
+      break;
       case 1:  // Square
-        outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
-        outputValue += config.dcOffset;
-        break;
+      outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
+      outputValue += config.dcOffset;
+      break;
       case 2:  // Sine
-        {
-          float sineValue = sin(2 * PI * normalizedTime);
-          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
-        }
-        break;
+      {
+        float sineValue = sin(2 * PI * normalizedTime);
+        outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
+      }
+      break;
       case 3:  // Triangle
-        {
-          float triangleValue;
-          if (normalizedTime < 0.5f) {
-            triangleValue = 4.0f * normalizedTime - 1.0f;  // -1 to 1
-          } else {
-            triangleValue = 3.0f - 4.0f * normalizedTime;  // 1 to -1
-          }
-          outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
+      {
+        float triangleValue;
+        if (normalizedTime < 0.5f) {
+          triangleValue = 4.0f * normalizedTime - 1.0f;  // -1 to 1
+        } else {
+          triangleValue = 3.0f - 4.0f * normalizedTime;  // 1 to -1
         }
-        break;
+        outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
+      }
+      break;
       case 4:  // PWM
-        {
-          float dutyCycleNorm = config.dutyCycle / 100.0;
-          outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
-          outputValue += config.dcOffset;
-        }
-        break;
+      {
+        float dutyCycleNorm = config.dutyCycle / 100.0;
+        outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
+        outputValue += config.dcOffset;
+      }
+      break;
       default:
-        outputValue = 0;
+      outputValue = 0;
     }
     if (isnan(outputValue) || isinf(outputValue)) outputValue = 0;
     outputValue = constrain(outputValue, 0, 255);
   } else {
     outputValue = 0;
   }
-  Serial.printf("SignalPin: %d, OutputValue: %d\n", signalPin, outputValue);
-  dacWrite(signalPin, outputValue);
+  /* Serial.printf("SignalPin: %d, OutputValue: %d\n", signalPin, outputValue);
+  dacWrite(signalPin, outputValue); */
 }
 
 // ----------------------------
@@ -297,9 +297,9 @@ bool extractJsonBool(String json, String key) {
 //       HTTP HANDLERS
 // ----------------------------
 /* void handleRoot() {
-    Serial.println("Serving root page");
-    server.send_P(200, "text/html", htmlPage);
-  } */
+Serial.println("Serving root page");
+server.send_P(200, "text/html", htmlPage);
+} */
 
 void handleData() {
   captureWaveform();
@@ -336,7 +336,7 @@ void handleSetConfig() {
     int channelDelay = extractJsonInt(body, "channelDelay");
     int captureInterval = extractJsonInt(body, "captureInterval");
     int webUpdate = extractJsonInt(body, "webUpdate");
-
+    
     if (numSamples >= 10 && numSamples <= MAX_SAMPLES) {
       samplingConfig.numSamples = numSamples;
     }
@@ -352,14 +352,14 @@ void handleSetConfig() {
     if (webUpdate >= 100 && webUpdate <= 5000) {
       samplingConfig.webUpdateMs = webUpdate;
     }
-
+    
     Serial.println("Configuration updated:");
     Serial.println("  Samples: " + String(samplingConfig.numSamples));
     Serial.println("  Sample Rate: " + String(samplingConfig.sampleRateUs) + "µs");
     Serial.println("  Channel Delay: " + String(samplingConfig.channelDelayUs) + "µs");
     Serial.println("  Capture Interval: " + String(samplingConfig.captureIntervalMs) + "ms");
     Serial.println("  Web Update: " + String(samplingConfig.webUpdateMs) + "ms");
-
+    
     server.send(200, "text/plain", "Configuration updated");
   } else {
     server.send(400, "text/plain", "Invalid request body");
@@ -367,8 +367,8 @@ void handleSetConfig() {
 }
 
 /* void handleChartJS() {
-    server.send_P(200, "application/javascript", chartJS);
-  } */
+server.send_P(200, "application/javascript", chartJS);
+} */
 
 void handleSetMode() {
   if (server.hasArg("mode")) {
@@ -391,21 +391,21 @@ void handleSetSignalConfig() {
     int dutyCycle = extractJsonInt(body, "dutyCycle");
     int dcOffset = extractJsonInt(body, "dcOffset");
     int pulseWidthMs = extractJsonInt(body, "pulseWidthMs");
-
+    
     // REST handler safety: Validate all values before updating signalConfig
     if (waveformType < 0 || waveformType > 4)
-      return server.send(400, "text/plain", "Invalid waveformType");
+    return server.send(400, "text/plain", "Invalid waveformType");
     if (amplitude < 0 || amplitude > 255)
-      return server.send(400, "text/plain", "Invalid amplitude");
+    return server.send(400, "text/plain", "Invalid amplitude");
     if (frequency < 1 || frequency > 50000)
-      return server.send(400, "text/plain", "Invalid frequency");
+    return server.send(400, "text/plain", "Invalid frequency");
     if (dutyCycle < 0 || dutyCycle > 100)
-      return server.send(400, "text/plain", "Invalid dutyCycle");
+    return server.send(400, "text/plain", "Invalid dutyCycle");
     if (dcOffset < 0 || dcOffset > 255)
-      return server.send(400, "text/plain", "Invalid dcOffset");
+    return server.send(400, "text/plain", "Invalid dcOffset");
     if (pulseWidthMs < 1 || pulseWidthMs > 10000)
-      return server.send(400, "text/plain", "Invalid pulseWidthMs");
-
+    return server.send(400, "text/plain", "Invalid pulseWidthMs");
+    
     portENTER_CRITICAL(&signalMux);
     signalConfig.waveformType = waveformType;
     signalConfig.amplitude = amplitude;
@@ -414,7 +414,7 @@ void handleSetSignalConfig() {
     signalConfig.dcOffset = dcOffset;
     signalConfig.pulseWidthMs = pulseWidthMs;
     portEXIT_CRITICAL(&signalMux);
-
+    
     Serial.println("Signal generator configuration updated:");
     Serial.println("  Waveform: " + String(signalConfig.waveformType));
     Serial.println("  Amplitude: " + String(signalConfig.amplitude));
@@ -422,7 +422,7 @@ void handleSetSignalConfig() {
     Serial.println("  Duty Cycle: " + String(signalConfig.dutyCycle) + " %");
     Serial.println("  DC Offset: " + String(signalConfig.dcOffset));
     Serial.println("  Pulse Width: " + String(signalConfig.pulseWidthMs) + " ms");
-
+    
     server.send(200, "text/plain", "Signal configuration updated");
   } else {
     server.send(400, "text/plain", "Invalid request body");
@@ -434,7 +434,7 @@ void handleToggleSignal() {
   signalConfig.isEnabled = !signalConfig.isEnabled;
   signalConfig.singlePulse = false;
   portEXIT_CRITICAL(&signalMux);
-
+  
   if (!signalConfig.isEnabled) {
     dacWrite(signalPin, 0);
     Serial.println("Signal generator disabled.");
@@ -507,19 +507,19 @@ void setupServerRoutes() {
   server.on("/style.css", HTTP_GET, handleFileRequest);
   server.on("/chart.js", HTTP_GET, handleFileRequest);
   server.on("/app.js", HTTP_GET, handleFileRequest);
-
+  
   server.on("/data", HTTP_GET, handleData);
   server.on("/getConfig", HTTP_GET, handleGetConfig);
   server.on("/setConfig", HTTP_POST, handleSetConfig);
   server.on("/setMode", HTTP_GET, handleSetMode);
-
+  
   // Signal generator endpoints
   server.on("/setSignalConfig", HTTP_POST, handleSetSignalConfig);
   server.on("/getSignalConfig", HTTP_GET, handleGetSignalConfig);
   server.on("/toggleSignal", HTTP_POST, handleToggleSignal);
   server.on("/singlePulse", HTTP_POST, handleSinglePulse);
   server.on("/getSignalStatus", HTTP_GET, handleGetSignalStatus);
-
+  
   server.onNotFound(handleFileRequest);  // fallback
 }
 
@@ -536,47 +536,47 @@ void IRAM_ATTR onSignalTimer() {
 void setup() {
   Serial.begin(115200);
   Serial.println("ESP32 Oscilloscope & Signal Generator Starting...");
-
+  
   pinMode(LED_PIN, OUTPUT);
   pinMode(signalPin, OUTPUT);
-
+  
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS Mount Failed");
     return;
   }
-
+  
   // Initialize waveform data
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     for (int i = 0; i < MAX_SAMPLES; i++) {
       waveformData[ch][i] = 0;
     }
   }
-
+  
   connectWiFi();
   if (!wifiConnected) {
     Serial.println("Starting Access Point mode...");
     startAP();
   }
-
+  
   setupServerRoutes();
   server.begin();
   Serial.println("Web server started");
-
+  
   captureWaveform();
-
+  
   Serial.println("Setup complete!");
   Serial.println("Current sampling configuration:");
   Serial.println("  Samples: " + String(samplingConfig.numSamples));
   Serial.println("  Sample Rate: " + String(samplingConfig.sampleRateUs) + "µs");
   Serial.println("  Channel Delay: " + String(samplingConfig.channelDelayUs) + "µs");
   Serial.println("  Capture Interval: " + String(samplingConfig.captureIntervalMs) + "ms");
-
+  
   if (wifiConnected) {
     Serial.println("Connect to: http://" + WiFi.localIP().toString());
   } else {
     Serial.println("Connect to: http://" + WiFi.softAPIP().toString());
   }
-
+  
   // Setup signal generation timer
   signalTimer = timerBegin(0, 80, true);                    // timer 0, prescaler 80 for 1us ticks, count up
   timerAttachInterrupt(signalTimer, &onSignalTimer, true);  // edge triggered
@@ -589,7 +589,7 @@ void setup() {
 // ----------------------------
 void loop() {
   server.handleClient();
-
+  
   // Scope mode logic
   if (isSnapshotMode) {
     pinMode(triggerPin, INPUT_PULLUP);  // allow button use if not generating
@@ -607,7 +607,7 @@ void loop() {
       captureWaveform();
     }
   }
-
+  
   // Network Indicator LED
   if (apStarted) {
     digitalWrite(LED_PIN, HIGH);
@@ -620,7 +620,7 @@ void loop() {
   } else {
     digitalWrite(LED_PIN, LOW);
   }
-
+  
   // Debug print once per second
   static unsigned long lastDebug = 0;
   if (millis() - lastDebug > 1000) {
@@ -643,7 +643,7 @@ void loop() {
     Serial.println(pulseStartTime);
     Serial.println("--------------");
   }
-
+  
   if (signalUpdateFlag) {
     signalUpdateFlag = false;
     updateSignalOutput(); // Do heavy work OUTSIDE ISR
