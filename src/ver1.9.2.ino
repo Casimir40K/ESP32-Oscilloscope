@@ -149,6 +149,10 @@ void handleNotFound();
 void setupServerRoutes();
 
 
+const int SIGNAL_BUF_SIZE = 256;  // Adjust for your desired resolution
+uint8_t signalBuf[SIGNAL_BUF_SIZE];
+volatile uint16_t signalBufIndex = 0;
+
 // ----------------------------
 //      WIFI CONNECTION
 // ----------------------------
@@ -202,71 +206,51 @@ void captureWaveform() {
 // ----------------------------
 //   SIGNAL GENERATION LOGIC
 // ----------------------------
-void updateSignalOutput() {
-  int outputValue = 0;
-  
-  // Safely copy config for use in ISR
-  //portENTER_CRITICAL_ISR(&signalMux);
+
+
+void fillSignalBuffer() {
+  // Copy current config for thread safety
   SignalConfig config = signalConfig;
-  //portEXIT_CRITICAL_ISR(&signalMux);
-  
-  // Sanity checks
-  if (config.amplitude < 0) config.amplitude = 0;
-  if (config.amplitude > 255) config.amplitude = 255;
-  if (config.dcOffset < 0) config.dcOffset = 0;
-  if (config.dcOffset > 255) config.dcOffset = 255;
-  if (config.frequency < 1) config.frequency = 1;  // Prevent divide-by-zero!
-  if (config.dutyCycle < 0) config.dutyCycle = 0;
-  if (config.dutyCycle > 100) config.dutyCycle = 100;
-  
-  if (config.isEnabled) {
-    float periodUs = 1000000.0 / config.frequency;
-    float timeInPeriod = fmod(micros(), periodUs);
-    float normalizedTime = timeInPeriod / periodUs;
-    if (isnan(normalizedTime) || isinf(normalizedTime)) normalizedTime = 0.0;
-    
-    switch (config.waveformType) {
-      case 0:  // DC
-      outputValue = config.amplitude;
-      break;
-      case 1:  // Square
-      outputValue = (normalizedTime < 0.5) ? config.amplitude : 0;
-      outputValue += config.dcOffset;
-      break;
-      case 2:  // Sine
-      {
-        float sineValue = sin(2 * PI * normalizedTime);
-        outputValue = config.dcOffset + int((config.amplitude / 2.0) * (sineValue + 1.0));
-      }
-      break;
-      case 3:  // Triangle
-      {
-        float triangleValue;
-        if (normalizedTime < 0.5f) {
-          triangleValue = 4.0f * normalizedTime - 1.0f;  // -1 to 1
-        } else {
-          triangleValue = 3.0f - 4.0f * normalizedTime;  // 1 to -1
-        }
-        outputValue = config.dcOffset + int((config.amplitude / 2.0) * (triangleValue + 1.0f));
-      }
-      break;
-      case 4:  // PWM
-      {
-        float dutyCycleNorm = config.dutyCycle / 100.0;
-        outputValue = (normalizedTime < dutyCycleNorm) ? config.amplitude : 0;
-        outputValue += config.dcOffset;
-      }
-      break;
+
+  for (int i = 0; i < SIGNAL_BUF_SIZE; i++) {
+    float t = (float)i / SIGNAL_BUF_SIZE; // 0...1
+    int value = 0;
+
+    switch(config.waveformType) {
+      case 0: // DC
+        value = config.dcOffset;
+        break;
+      case 1: // Square
+        value = (t < 0.5) ? config.amplitude + config.dcOffset : config.dcOffset;
+        break;
+      case 2: // Sine
+        value = config.dcOffset + int((config.amplitude / 2.0) * (sin(2 * PI * t) + 1.0));
+        break;
+      case 3: // Triangle
+        if (t < 0.5)
+          value = config.dcOffset + int(config.amplitude * (2 * t));
+        else
+          value = config.dcOffset + int(config.amplitude * (2 * (1 - t)));
+        break;
+      case 4: // PWM
+        value = (t < config.dutyCycle / 100.0) ? config.amplitude + config.dcOffset : config.dcOffset;
+        break;
       default:
-      outputValue = 0;
+        value = config.dcOffset;
     }
-    if (isnan(outputValue) || isinf(outputValue)) outputValue = 0;
-    outputValue = constrain(outputValue, 0, 255);
-  } else {
-    outputValue = 0;
+    signalBuf[i] = constrain(value, 0, 255);
   }
-  /* Serial.printf("SignalPin: %d, OutputValue: %d\n", signalPin, outputValue);
-  dacWrite(signalPin, outputValue); */
+  signalBufIndex = 0; // Reset index each time we refill
+}
+
+void updateSignalOutput() {
+  if (!signalConfig.isEnabled) {
+    dacWrite(signalPin, 0);
+    return;
+  }
+  uint8_t value = signalBuf[signalBufIndex];
+  dacWrite(signalPin, value);
+  signalBufIndex = (signalBufIndex + 1) % SIGNAL_BUF_SIZE;
 }
 
 // ----------------------------
@@ -427,6 +411,12 @@ void handleSetSignalConfig() {
   } else {
     server.send(400, "text/plain", "Invalid request body");
   }
+
+  fillSignalBuffer();
+  int interval_us = 1000000 / (signalConfig.frequency * SIGNAL_BUF_SIZE);
+  if (interval_us < 1) interval_us = 1;
+  timerAlarmWrite(signalTimer, interval_us, true); 
+
 }
 
 void handleToggleSignal() {
@@ -578,10 +568,14 @@ void setup() {
   }
   
   // Setup signal generation timer
-  signalTimer = timerBegin(0, 80, true);                    // timer 0, prescaler 80 for 1us ticks, count up
-  timerAttachInterrupt(signalTimer, &onSignalTimer, true);  // edge triggered
-  timerAlarmWrite(signalTimer, 1000, true);                  // 100us interval, autoreload
-  timerAlarmEnable(signalTimer);
+signalTimer = timerBegin(0, 80, true); // timer 0, prescaler 80 for 1us ticks
+timerAttachInterrupt(signalTimer, &onSignalTimer, true);
+
+// Compute timer interval from frequency and buffer size
+int interval_us = 1000000 / (signalConfig.frequency * SIGNAL_BUF_SIZE);
+if (interval_us < 1) interval_us = 1; // Prevent zero-interval
+timerAlarmWrite(signalTimer, interval_us, true);
+timerAlarmEnable(signalTimer);
 }
 
 // ----------------------------
